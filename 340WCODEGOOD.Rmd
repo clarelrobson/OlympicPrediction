@@ -1,0 +1,866 @@
+---
+title: 'Code'
+author: "Clare Robson"
+output: html_document
+---
+
+```{r}
+library(readr)
+library(tidyverse)
+library(stringr)
+library(ggplot2)
+library(forecast)
+library(FNN)
+```
+
+```{r}
+#load data
+olympics <- read.csv("~/Desktop/results (1).csv")
+tokyo_olympics <- read.csv("~/Desktop/2020Olympics.csv")
+paris_olympics <- read.csv("~/Desktop/2024Olympics.csv")
+```
+
+```{r}
+#remove unneeded variables
+olympics <- olympics %>%
+  select("Gender", "Event", "Year", "Medal", "Result") %>%
+  filter(Medal != "S")
+
+head(olympics)
+```
+
+```{r}
+#combine datasets
+olympics <- rbind(olympics, tokyo_olympics, paris_olympics)
+```
+
+```{r}
+#convert time values to seconds
+convert_to_seconds <- function(time_str) {
+  ifelse(grepl(":", time_str), {
+    parts <- strsplit(time_str, ":")[[1]]
+    minutes <- as.numeric(parts[1])
+    seconds <- as.numeric(parts[2])
+    total_seconds <- minutes * 60 + seconds
+  }, {
+    as.numeric(time_str)
+  })
+}
+
+olympics$Result <- sapply(olympics$Result, convert_to_seconds)
+```
+
+```{r}
+#sprint and mid-distance events
+events <- unique(olympics$Event)
+
+selected_events <- events[events %in% c(
+  "100M Men", "100M Women", "200M Men", "200M Women", "400M Men", "400M Women",
+  "800M Men", "800M Women", "1500M Men", "1500M Women")]
+```
+
+```{r}
+#create data sets for each selected event
+for (event in selected_events) {
+  event_data <- subset(olympics, Event == event)
+  assign(paste0(gsub(" ", "_", event), "_data"), event_data)
+}
+```
+
+```{r}
+#get list of dataset names
+dataset_names <- ls(pattern = "_data$")
+
+#remove the event_data dataset from the list
+dataset_names <- subset(dataset_names, dataset_names != "event_data")
+
+print(dataset_names)
+```
+
+```{r}
+#create separate datasets for each event containing gold and bronze times
+for (event_data_name in dataset_names) {
+  #get the dataset
+  event_data <- get(event_data_name)
+  
+  #subset the dataset into gold and bronze subsets
+  gold_data <- subset(event_data, Medal == "G")
+  bronze_data <- subset(event_data, Medal == "B")
+  
+  #create new dataset names for gold and bronze data
+  gold_dataset_name <- paste0(gsub("_data", "_gold_data", event_data_name))
+  bronze_dataset_name <- paste0(gsub("_data", "_bronze_data", event_data_name))
+  
+  #assign gold and bronze datasets to the new dataset names
+  assign(gold_dataset_name, gold_data)
+  assign(bronze_dataset_name, bronze_data)
+}
+```
+
+
+```{r}
+#plot gold vs. bronze times for an event
+plot_gold_vs_bronze <- function(event_data, event_name) {
+  ggplot() + 
+    geom_line(data = event_data[event_data$Medal == "G", ], 
+              aes(x = Year, y = Result, color = "Gold", group = 1)) + 
+    geom_line(data = event_data[event_data$Medal == "B", ], 
+              aes(x = Year, y = Result, color = "Bronze", group = 1)) +
+    geom_point(data = event_data[event_data$Medal == "G", ], 
+               aes(x = Year, y = Result, color = "Gold")) +
+    geom_point(data = event_data[event_data$Medal == "B", ], 
+               aes(x = Year, y = Result, color = "Bronze")) +
+    labs(title = paste(event_name, "- Gold vs. Bronze Times"), 
+         x = "Year", y = "Time (seconds)", color = "Medal") +
+    scale_color_manual(values = c(Gold = "gold", Bronze = "brown")) +
+    theme_minimal() + theme(
+      panel.background = element_rect(fill = "white", color = "white"),  # White background inside the plot area
+      plot.background = element_rect(fill = "white", color = "white"),  # White background outside the plot area
+    )
+}
+
+
+#loop over selected events and generate plot for each event
+for (event in selected_events) {
+  event_data <- subset(olympics, Event == event)
+  plot <- plot_gold_vs_bronze(event_data, event)
+  print(plot)
+  
+  file_path <- paste0("~/Desktop/", event, "_gold_vs_bronze.png")
+  ggsave(file_path, plot = plot, width = 8, height = 6, dpi = 300)
+  print(plot)
+}
+```
+
+```{r}
+#get the names of all objects in the environment
+all_dataset_names <- ls()
+
+#filter the names based on whether they end with "gold_data" or "bronze_data"
+gold_dataset_names <- all_dataset_names[grep("gold_data$", all_dataset_names)]
+bronze_dataset_names <- all_dataset_names[grep("bronze_data$", all_dataset_names)]
+
+#exclude specific dataset names like "gold_data" and "bronze_data"
+gold_dataset_names <- gold_dataset_names[!gold_dataset_names %in% c("gold_data", "bronze_data")]
+bronze_dataset_names <- bronze_dataset_names[!bronze_dataset_names %in% c("gold_data", "bronze_data")]
+
+#print the names of gold and bronze datasets
+print(gold_dataset_names)
+print(bronze_dataset_names)
+```
+
+```{r}
+#set seed for reproducibility
+set.seed(2225)
+
+#split data into training and testing sets
+split_data <- function(data) {
+  #get the number of rows in the data
+  n_rows <- nrow(data)
+  
+  #sample indices for training data
+  train_ind <- sample(1:n_rows, floor(0.80 * n_rows))
+  
+  #create training and testing sets
+  train_data <- data[train_ind, ]
+  test_data <- data[-train_ind, ]
+  
+  #return training and testing sets
+  return(list(Train = train_data, Test = test_data))
+}
+
+#loop over each dataset containing gold times
+for (dataset_name in gold_dataset_names) {
+  dataset <- get(dataset_name)
+  
+  #split the dataset into training and testing sets
+  split_data_list <- split_data(dataset)
+  
+  #assign the training and testing sets to new variables
+  assign(paste0(dataset_name, "_Train"), split_data_list$Train)
+  assign(paste0(dataset_name, "_Test"), split_data_list$Test)
+}
+
+#loop over each dataset containing bronze times
+for (dataset_name in bronze_dataset_names) {
+  dataset <- get(dataset_name)
+  
+  #split the dataset into training and testing sets
+  split_data_list <- split_data(dataset)
+  
+  #assign the training and testing sets to new variables
+  assign(paste0(dataset_name, "_Train"), split_data_list$Train)
+  assign(paste0(dataset_name, "_Test"), split_data_list$Test)
+}
+```
+
+```{r}
+# working with the olympic dataset rather than the smaller ones
+olympics_reduced <- olympics %>%
+  filter(Event %in% selected_events) %>%
+  mutate(male = ifelse(Gender == "M", 1, 0))
+```
+
+```{r}
+# set seed for reproducibility
+set.seed(2225)
+
+#sample indices for training data
+train_ind <- sample(1:nrow(olympics_reduced), floor(0.80 * nrow(olympics_reduced)))
+
+#create training and testing sets
+Train_olympics <- olympics_reduced[train_ind, ]
+Test_olympics <- olympics_reduced[-train_ind, ]
+``` 
+
+```{r}
+#visually examine a few dataset distributions -> they are right skewed and not consistently bell shaped
+hist(`100M_Men_gold_data`$Result, breaks = 15)
+hist(`200M_Men_gold_data`$Result, breaks = 20)
+hist(`100M_Women_gold_data`$Result, breaks = 10)
+hist(`400M_Men_gold_data`$Result, breaks = 15)
+hist(`800M_Women_gold_data`$Result, breaks = 15)
+hist(`1500M_Men_gold_data`$Result, breaks = 15)
+```
+
+```{r}
+# Test LM with log-transformed time
+lm_olympics_log <- lm(log(Result) ~ Year, data = `100M_Men_gold_data_Train`)
+
+summary(lm_olympics_log)
+```
+
+```{r}
+# Make predictions on the test dataset (log-transformed model)
+predictions_log <- predict(lm_olympics_log, newdata = `100M_Men_gold_data_Test`)
+
+# Reverse the log transformation to get predicted time
+predictions <- exp(predictions_log)
+
+# Calculate RMSE (root mean squared error)
+MSE <- mean((`100M_Men_gold_data_Test`$Result - predictions)^2)
+RMSE <- sqrt(MSE)
+RMSE
+
+# Calculate MAE (mean absolute error)
+MAE <- mean(abs(`100M_Men_gold_data_Test`$Result - predictions))
+MAE
+```
+
+
+```{r}
+#test lm with full dataset
+
+# Fit the linear model on the log-transformed Result
+olympics_lm <- lm(log(Result) ~ Year + male + Medal + Event, data = Train_olympics)
+
+summary(olympics_lm)
+```
+
+```{r}
+# Make predictions on the test dataset (log-transformed model)
+predictions_log_ful <- predict(olympics_lm, newdata = Test_olympics)
+
+# Reverse the log transformation to get predicted time
+predictions_ful <- exp(predictions_log_ful)
+
+# Calculate RMSE (root mean squared error)
+MSE <- mean((Test_olympics$Result - predictions_ful)^2, na.rm = TRUE)
+RMSE <- sqrt(MSE)
+print(RMSE)
+
+# Calculate MAE (mean absolute error)
+MAE <- mean(abs(Test_olympics$Result - predictions_ful), na.rm = TRUE)
+print(MAE)
+```
+
+```{r}
+#get all object names in the environment
+all_objects <- ls()
+
+#filter for training datasets
+train_dataset_names <- grep("_Train$", all_objects, value = TRUE)
+
+#filter for testing datasets
+test_dataset_names <- grep("_Test$", all_objects, value = TRUE)
+```
+
+```{r}
+# Create an empty data frame to store results in the desired order
+result_df <- data.frame(Race = character(),
+                         Medal = character(),
+                         LM_RMSE = numeric(),
+                         LM_MAE = numeric(),
+                         Normalized_LM_RMSE = numeric(),
+                         Normalized_LM_MAE = numeric(),
+                         LM_2028_Predictions = numeric(),
+                         Lower_95_CI = numeric(),
+                         Upper_95_CI = numeric())
+
+# Loop over each dataset
+for (dataset_name in train_dataset_names) {
+  # Get the training and testing datasets
+  training_dataset <- get(dataset_name)
+  testing_dataset_name <- gsub("_Train", "_Test", dataset_name)
+  testing_dataset <- get(testing_dataset_name)
+  
+  # Determine the race name
+  race_name <- gsub("_bronze_data|_gold_data|_Train", "", dataset_name)
+  
+  # Fit the linear regression model on log-transformed Result
+  lm_model <- lm(log(Result) ~ Year, data = training_dataset)
+  
+  # Make predictions on the test set (log scale)
+  predictions_log <- predict(lm_model, newdata = testing_dataset)
+  
+  # Reverse log transformation to get predicted times (original scale)
+  predictions <- exp(predictions_log)
+  
+  # Calculate RMSE and MAE on the original scale
+  mse <- mean((testing_dataset$Result - predictions)^2, na.rm = TRUE)
+  rmse <- sqrt(mse)
+  mae <- mean(abs(testing_dataset$Result - predictions), na.rm = TRUE)
+  
+  # Calculate normalized RMSE and MAE
+  average_time <- mean(testing_dataset$Result, na.rm = TRUE)
+  normalized_lm_mae <- mae / average_time
+  normalized_lm_rmse <- rmse / average_time
+  
+  # Compute residuals and standard deviation
+  residuals <- testing_dataset$Result - predictions
+  residual_sd <- sd(residuals, na.rm = TRUE)
+  
+  # Predict results for the year 2028 (log scale)
+  new_data_2028 <- data.frame(Year = 2028)
+  predictions_2028_log <- predict(lm_model, newdata = new_data_2028)
+  
+  # Convert log-transformed prediction back to original scale
+  predictions_2028 <- exp(predictions_2028_log)
+  
+  # Compute 95% Confidence Interval
+  lower_95_ci <- max(0, predictions_2028 - 1.96 * residual_sd)
+  upper_95_ci <- predictions_2028 + 1.96 * residual_sd
+
+  # Determine medal type
+  medal_type <- ifelse(grepl("gold", dataset_name), "G", "B")
+  
+  # Store results **in the correct order**
+  result_df[nrow(result_df) + 1, ] <- c(race_name, medal_type, rmse, mae, normalized_lm_rmse, normalized_lm_mae, predictions_2028, lower_95_ci, upper_95_ci)
+}
+
+# Save results to CSV
+write.csv(result_df, "lm_results.csv", row.names = FALSE)
+```
+
+
+```{r}
+lm_results <- read.csv("~/Desktop/lm_results.csv")
+head(lm_results, n = Inf)
+```
+
+```{r}
+#modify to match format of original race results
+transformed_results <- lm_results %>%
+  rename(Event = Race, Result = LM_2028_Predictions) %>%
+  mutate(Event = gsub("_", " ", Event),
+         Gender = ifelse(substr(Event, nchar(Event) - 4, nchar(Event)) == "Women", "W", "M"),
+         Year = 2028) %>%
+  select(Event, Result, Gender, Year, Medal)
+
+head(transformed_results)
+```
+
+```{r}
+olympics_with_lm_predictions <- rbind(olympics, transformed_results)
+```
+
+```{r}
+#plot and include 2028 predictions
+for (event in selected_events) {
+  event_data <- subset(olympics_with_lm_predictions, Event == event)
+  plot <- plot_gold_vs_bronze(event_data, event)
+  print(plot)
+}
+```
+
+```{r}
+`400M_Men_bronze_data_Train` <- `400M_Men_bronze_data_Train`[complete.cases(`400M_Men_bronze_data_Train`), ]
+`800M_Women_bronze_data_Train` <-  `800M_Women_bronze_data_Train`[complete.cases( `800M_Women_bronze_data_Train`), ]
+`1500M_Men_bronze_data_Train` <- `1500M_Men_bronze_data_Train`[complete.cases(`1500M_Men_bronze_data_Train`), ]
+`200M_Men_bronze_data_Train` <- `200M_Men_bronze_data_Train`[complete.cases(`200M_Men_bronze_data_Train`), ]
+```
+
+
+```{r}
+# Create an empty data frame to store results in the correct order
+knn_result_df <- data.frame(Race = character(),
+                            Medal = character(),
+                            KNN_RMSE = numeric(),
+                            KNN_MAE = numeric(),
+                            Normalized_KNN_RMSE = numeric(),
+                            Normalized_KNN_MAE = numeric(),
+                            KNN_2028_Predictions = numeric(),
+                            Lower_95_CI = numeric(),
+                            Upper_95_CI = numeric())
+
+# Loop over each dataset
+for (dataset_name in train_dataset_names) {
+  # Get the training and testing datasets
+  training_dataset <- get(dataset_name)
+  testing_dataset_name <- gsub("_Train", "_Test", dataset_name)
+  testing_dataset <- get(testing_dataset_name)
+  
+  # Ensure that NAs are removed for KNN
+  training_dataset <- training_dataset[complete.cases(training_dataset), ]
+  testing_dataset <- testing_dataset[complete.cases(testing_dataset), ]
+  
+  # Determine the race name
+  race_name <- gsub("_bronze_data|_gold_data|_Train", "", dataset_name)
+  
+  # Fit the KNN model using log-transformed Result
+  training_dataset$log_Result <- log(training_dataset$Result)
+  testing_dataset$log_Result <- log(testing_dataset$Result)
+  
+  # Fit the KNN model (using only numeric columns)
+  numeric_cols <- sapply(training_dataset, is.numeric)  # Identify numeric columns
+  training_numeric <- training_dataset[, numeric_cols]
+  testing_numeric <- testing_dataset[, numeric_cols]
+  
+  # Fit the KNN model
+  knn_model <- knn.reg(train = training_numeric,
+                       test = testing_numeric,
+                       y = training_dataset$log_Result,
+                       k = 3)
+  
+  # Predictions in the log scale
+  predictions_log <- knn_model$pred
+  
+  # Reverse the log transformation to get predictions back to the original scale
+  predictions <- exp(predictions_log)
+  
+  # Calculate RMSE and MAE on the original scale
+  mse <- mean((testing_dataset$Result - predictions)^2, na.rm = TRUE)
+  rmse <- sqrt(mse)
+  mae <- mean(abs(testing_dataset$Result - predictions), na.rm = TRUE)
+  
+  # Calculate normalized RMSE and MAE
+  average_time <- mean(testing_dataset$Result, na.rm = TRUE)
+  normalized_knn_mae <- mae / average_time
+  normalized_knn_rmse <- rmse / average_time
+  
+  # Calculate residuals and standard deviation of residuals
+  residuals <- testing_dataset$Result - predictions
+  residual_sd <- sd(residuals, na.rm = TRUE)
+  
+  # Predict results for the year 2028 (use log-transformed dataset)
+  new_data_2028 <- testing_numeric[1, , drop = FALSE]
+  new_data_2028$Year <- 2028  # Add the Year column for prediction
+  new_data_2028 <- new_data_2028[, colnames(training_numeric), drop = FALSE]  # Match column names with training data
+  
+  predictions_2028_knn <- knn.reg(train = training_numeric,
+                                   test = new_data_2028,
+                                   y = training_dataset$log_Result,
+                                   k = 3)$pred
+  
+  # Reverse log transformation for the 2028 prediction
+  prediction_2028 <- exp(predictions_2028_knn)
+  
+  # Calculate 95% confidence interval for 2028 prediction
+  lower_95_ci <- max(0, prediction_2028 - 1.96 * residual_sd)  # Ensure non-negative times
+  upper_95_ci <- prediction_2028 + 1.96 * residual_sd
+
+  # **Store results in the correct order**
+  knn_result_df[nrow(knn_result_df) + 1, ] <- c(
+    race_name, ifelse(grepl("gold", dataset_name), "G", "B"), rmse, mae, normalized_knn_rmse, 
+    normalized_knn_mae, prediction_2028, lower_95_ci, upper_95_ci
+  )
+}
+
+# Save the results to a CSV file
+write.csv(knn_result_df, "knn_results.csv", row.names = FALSE)
+```
+
+```{r}
+knn_results <- read.csv("~/Desktop/knn_results.csv")
+head(knn_results, n = Inf)
+```
+
+```{r}
+RMSE <- lm_results %>%
+  left_join(knn_results, by = c("Race", "Medal")) %>%
+  select("Race", "Medal", "Normalized_LM_RMSE", "Normalized_KNN_RMSE", "Normalized_LM_MAE", "Normalized_KNN_MAE") %>%
+  mutate(Smallest_RMSE = ifelse(Normalized_LM_RMSE < Normalized_KNN_RMSE, "LM", "KNN")) %>%
+  mutate(Smallest_MAE = ifelse(Normalized_LM_MAE < Normalized_KNN_MAE, "LM", "KNN"))
+
+head(RMSE, n = Inf)
+```
+
+```{r}
+#modify to match format of original race results
+transformed_results_knn <- knn_results %>%
+  rename(Event = Race, Result = KNN_2028_Predictions) %>%
+  mutate(Event = gsub("_", " ", Event),
+         Gender = ifelse(substr(Event, nchar(Event) - 4, nchar(Event)) == "Women", "W", "M"),
+         Year = 2028) %>%
+  select(Event, Result, Gender, Year, Medal)
+
+head(transformed_results_knn)
+```
+
+```{r}
+olympics_with_knn_predictions <- rbind(olympics, transformed_results_knn)
+```
+
+```{r}
+#plot and include 2028 predictions
+for (event in selected_events) {
+  event_data <- subset(olympics_with_knn_predictions, Event == event)
+  plot <- plot_gold_vs_bronze(event_data, event)
+  print(plot)
+}
+```
+
+
+```{r}
+# Create an empty data frame to store results
+result_df <- data.frame(Race = character(),
+                         Medal = character(),
+                         ARIMA_RMSE = numeric(),
+                         ARIMA_MAE = numeric(),
+                         Normalized_ARIMA_RMSE = numeric(),
+                         Normalized_ARIMA_MAE = numeric(), 
+                         ARIMA_2028_Predictions = numeric(),
+                         ARIMA_95CI_Lower = numeric(),
+                         ARIMA_95CI_Upper = numeric())
+
+# Loop over each dataset
+for (dataset_name in train_dataset_names) {
+  # Get the training dataset
+  training_dataset <- get(dataset_name)
+  
+  # Get the corresponding testing dataset
+  testing_dataset_name <- gsub("_Train", "_Test", dataset_name)
+  testing_dataset <- get(testing_dataset_name)
+  
+  # Determine the race name
+  race_name <- gsub("_bronze_data|_gold_data|_Train", "", dataset_name)
+  
+  # Fit the ARIMA model
+  tryCatch({
+    # Fit ARIMA model using auto.arima for automatic selection of parameters (p, d, q)
+    arima_model <- auto.arima(training_dataset$Result, seasonal = FALSE)
+  }, error = function(e) {
+    cat("Error occurred while fitting ARIMA model for race:", race_name, "\n")
+    next  # Skip this race if model fitting fails
+  })
+  
+  # Make predictions on the testing dataset
+  predictions <- forecast(arima_model, h = length(testing_dataset$Result))
+  
+  # Calculate RMSE and MAE, ignoring NA values
+  na_indices <- !is.na(testing_dataset$Result)  # Indices of non-NA values
+  mse <- mean((testing_dataset$Result[na_indices] - predictions$mean[na_indices])^2)
+  rmse <- sqrt(mse)
+  mae <- mean(abs(testing_dataset$Result[na_indices] - predictions$mean[na_indices]))
+  
+  # Calculate average time for the race
+  average_time <- mean(testing_dataset$Result, na.rm = TRUE)  # Assuming the time is in a column named 'Result'
+  
+  # Calculate normalized RMSE and MAE
+  normalized_arima_mae <- mae / average_time
+  normalized_arima_rmse <- rmse / average_time
+  
+  # Get 95% confidence intervals (lower and upper bounds)
+  ci_lower <- predictions$lower[, 2]  # 95% lower bound
+  ci_upper <- predictions$upper[, 2]  # 95% upper bound
+  
+  # Predict results for the year 2028 (one step ahead)
+  predictions_2028 <- forecast(arima_model, h = 1)
+  
+  # Store the results for each race
+  result_df[nrow(result_df) + 1, ] <- c(race_name, 
+                                         ifelse(grepl("gold", dataset_name), "G", "B"), 
+                                         rmse, mae, 
+                                         normalized_arima_rmse, normalized_arima_mae, predictions_2028$mean,
+                                         ci_lower[1], ci_upper[1])
+}
+
+# Reorder the result_df to match LM and KNN
+result_df <- result_df[order(result_df$Race),]
+
+# Save the results to a CSV file
+write.csv(result_df, "arima_results.csv", row.names = FALSE)
+```
+
+```{r}
+arima_results <- read.csv("~/Desktop/arima_results.csv")
+head(arima_results, n = Inf)
+```
+
+```{r}
+RMSE2 <- knn_results %>%
+  left_join(arima_results, by = c("Race", "Medal")) %>%
+  select("Race", "Medal", "Normalized_KNN_RMSE", "Normalized_ARIMA_RMSE", "Normalized_KNN_MAE", "Normalized_ARIMA_MAE") %>%
+  mutate(Smallest_RMSE = ifelse(Normalized_KNN_RMSE < Normalized_ARIMA_RMSE, "KNN", "ARIMA")) %>%
+  mutate(Smallest_MAE = ifelse(Normalized_KNN_MAE < Normalized_ARIMA_MAE, "KNN", "ARIMA"))
+
+head(RMSE2, n = Inf)
+```
+
+```{r}
+# Calculate average normalized RMSE for KNN
+avg_knn_norm_rmse <- mean(knn_results$Normalized_KNN_RMSE, na.rm = TRUE)
+
+# Calculate average normalized MAE
+avg_knn_norm_mae <- mean(knn_results$Normalized_KNN_MAE, na.rm = TRUE)
+
+avg_knn_norm_rmse
+avg_knn_norm_mae
+```
+
+```{r}
+# Calculate smallest normalized RMSE
+min_knn_norm_rmse <- min(knn_results$Normalized_KNN_RMSE, na.rm = TRUE)
+
+# Calculate largest normalized RMSE
+max_knn_norm_rmse <- max(knn_results$Normalized_KNN_RMSE, na.rm = TRUE)
+
+# Calculate smallest normalized MAE
+min_knn_norm_mae <- min(knn_results$Normalized_KNN_MAE, na.rm = TRUE)
+
+# Calculate largest normalized MAE
+max_knn_norm_mae <- max(knn_results$Normalized_KNN_MAE, na.rm = TRUE)
+
+min_knn_norm_rmse
+max_knn_norm_rmse
+min_knn_norm_mae
+max_knn_norm_mae
+```
+
+```{r}
+RMSE <- lm_results %>%
+  left_join(knn_results, by = c("Race", "Medal")) %>%
+  select("Race", "Medal", "Normalized_LM_RMSE", "Normalized_KNN_RMSE", "Normalized_LM_MAE", "Normalized_KNN_MAE") %>%
+  mutate(Smallest_RMSE = ifelse(Normalized_LM_RMSE < Normalized_KNN_RMSE, "LM", "KNN")) %>%
+  mutate(Smallest_MAE = ifelse(Normalized_LM_MAE < Normalized_KNN_MAE, "LM", "KNN"))
+
+head(RMSE, n = Inf)
+```
+
+```{r}
+comparison <- merge(lm_results, knn_results, by = c("Race", "Medal"))
+
+final_comp <- merge(comparison, arima_results, by = c("Race", "Medal"))
+
+final_comp <- final_comp %>%
+  select("Medal", "Race", "Normalized_LM_RMSE", "Normalized_KNN_RMSE", "Normalized_ARIMA_RMSE", "Normalized_LM_MAE", "Normalized_KNN_MAE", "Normalized_ARIMA_MAE") %>%
+  mutate(lowest_RMSE = ifelse(pmin(Normalized_LM_RMSE, Normalized_KNN_RMSE, Normalized_ARIMA_RMSE) == Normalized_LM_RMSE, "LM", ifelse(Normalized_KNN_RMSE < Normalized_ARIMA_RMSE, "KNN", "ARIMA"))) %>%
+  mutate(lowest_MAE = ifelse(pmin(Normalized_LM_MAE, Normalized_KNN_MAE, Normalized_ARIMA_MAE) == Normalized_LM_MAE, "LM", ifelse(Normalized_KNN_MAE < Normalized_ARIMA_MAE, "KNN", "ARIMA")))
+
+write.csv(final_comp, "method_comparison.csv", row.names = FALSE)
+
+final_comp %>%
+  group_by(lowest_MAE) %>%
+  summarise(count = n())
+
+final_comp %>%
+  group_by(lowest_RMSE) %>%
+  summarise(count = n())
+```
+
+```{r}
+olympics_reduced <- olympics_reduced %>%
+  select(-male) %>%
+  mutate(Lower_95_CI = NA, Upper_95_CI = NA)
+
+head(olympics_reduced)
+```
+
+```{r}
+transformed_results_knn_plus_CI <- knn_results %>%
+  rename(Event = Race, Result = KNN_2028_Predictions) %>%
+  mutate(Event = gsub("_", " ", Event),
+         Gender = ifelse(substr(Event, nchar(Event) - 4, nchar(Event)) == "Women", "W", "M"),
+         Year = 2028) %>%
+  select(Event, Result, Gender, Year, Medal, Lower_95_CI, Upper_95_CI)
+
+olympics_reduced_with_knn_predictions <- rbind(olympics_reduced, transformed_results_knn_plus_CI)
+
+head(olympics_reduced_with_knn_predictions)
+```
+
+```{r}
+# Loop over selected events and plot for each one
+for (event in unique(olympics_reduced_with_knn_predictions$Event)) {
+  # Filter data for the event (include all years)
+  event_data_filtered <- subset(olympics_reduced_with_knn_predictions, Event == event)
+  
+  # Separate 2028 predictions and CIs for gold and bronze medalists
+  event_2028_gold <- subset(event_data_filtered, Medal == "G" & Year == 2028)
+  event_2028_bronze <- subset(event_data_filtered, Medal == "B" & Year == 2028)
+  
+  # Create the plot for gold medalists
+  plot_gold <- ggplot(subset(event_data_filtered, Medal == "G"), aes(x = Year)) +
+    geom_line(aes(y = Result), color = "gold", size = 1) +  # Gold medal line
+    geom_point(aes(y = Result), color = "gold", size = 3) +  # Gold medal points
+    # CI error bars
+    geom_errorbar(data = event_2028_gold, aes(ymin = Lower_95_CI, ymax = Upper_95_CI), width = 2, color = "black", size = 0.75) + 
+    labs(title = paste(event, "Gold Medalists (All Years & 2028 Prediction)"),
+         x = "Year", y = "Race Time (seconds)") +
+    theme_minimal() +
+    theme(
+      panel.background = element_rect(fill = "white", color = "white"),  # White background inside the plot area
+      plot.background = element_rect(fill = "white", color = "white"),  # White background outside the plot area
+    )
+
+  # Create the plot for bronze medalists
+  plot_bronze <- ggplot(subset(event_data_filtered, Medal == "B"), aes(x = Year)) +
+    geom_line(aes(y = Result), color = "brown", size = 1) +  # Bronze medal line
+    geom_point(aes(y = Result), color = "brown", size = 3) +  # Bronze medal points
+    # CI error bars
+    geom_errorbar(data = event_2028_bronze, aes(ymin = Lower_95_CI, ymax = Upper_95_CI), width = 2, color = "black", size = 0.75) + 
+    labs(title = paste(event, "Bronze Medalists (All Years & 2028 Prediction)"),
+         x = "Year", y = "Race Time (seconds)") +
+    theme_minimal() +
+    theme(
+      panel.background = element_rect(fill = "white", color = "white"),  # White background inside the plot area
+      plot.background = element_rect(fill = "white", color = "white"),  # White background outside the plot area
+    )
+
+  # Save the plots to your desktop (update the path as needed)
+  file_path_gold <- paste0("~/Desktop/", event, "_gold_with_2028.png")  # Adjust the path if necessary
+  ggsave(file_path_gold, plot = plot_gold, width = 8, height = 6, dpi = 300)  # Save as PNG with 300 dpi
+  
+  file_path_bronze <- paste0("~/Desktop/", event, "_bronze_with_2028.png")  # Adjust the path if necessary
+  ggsave(file_path_bronze, plot = plot_bronze, width = 8, height = 6, dpi = 300)  # Save as PNG with 300 dpi
+  
+  # Print the plots
+  print(plot_gold)
+  print(plot_bronze)
+}
+```
+
+```{r}
+# Create an empty data frame to store residuals for Q-Q plots
+qq_plot_data <- data.frame(Race = character(),
+                           Medal = character(),
+                           Theoretical = numeric(),
+                           Sample = numeric())
+
+# Create an empty data frame to store results
+knn_result_df <- data.frame(Race = character(),
+                            Medal = character(),
+                            KNN_RMSE = numeric(),
+                            KNN_MAE = numeric(),
+                            Normalized_KNN_RMSE = numeric(),
+                            Normalized_KNN_MAE = numeric(),
+                            KNN_2028_Predictions = numeric(),
+                            Lower_95_CI = numeric(),
+                            Upper_95_CI = numeric())
+
+# Loop over each dataset
+for (dataset_name in train_dataset_names) {
+  # Get training and testing datasets
+  training_dataset <- get(dataset_name)
+  testing_dataset_name <- gsub("_Train", "_Test", dataset_name)
+  testing_dataset <- get(testing_dataset_name)
+  
+  # Remove NAs for KNN
+  training_dataset <- training_dataset[complete.cases(training_dataset), ]
+  testing_dataset <- testing_dataset[complete.cases(testing_dataset), ]
+  
+  # Determine race name and medal type
+  race_name <- gsub("_bronze_data|_gold_data|_Train", "", dataset_name)
+  medal_type <- ifelse(grepl("gold", dataset_name), "Gold", "Bronze")
+  
+  # Apply log transformation to Results
+  training_dataset$log_Result <- log(training_dataset$Result)
+  testing_dataset$log_Result <- log(testing_dataset$Result)
+  
+  # Extract numeric columns for KNN
+  numeric_cols <- sapply(training_dataset, is.numeric)
+  training_numeric <- training_dataset[, numeric_cols]
+  testing_numeric <- testing_dataset[, numeric_cols]
+  
+  # Fit the KNN model
+  knn_model <- knn.reg(train = training_numeric,
+                       test = testing_numeric,
+                       y = training_dataset$log_Result,
+                       k = 3)
+  
+  # Predictions in the log scale
+  predictions_log <- knn_model$pred
+  
+  # Reverse the log transformation
+  predictions <- exp(predictions_log)
+  
+  # Calculate residuals on the log scale
+  residuals_log <- testing_dataset$log_Result - predictions_log
+  
+  # Compute RMSE and MAE on the original scale
+  mse <- mean((testing_dataset$Result - predictions)^2, na.rm = TRUE)
+  rmse <- sqrt(mse)
+  mae <- mean(abs(testing_dataset$Result - predictions), na.rm = TRUE)
+  
+  # Compute normalized RMSE and MAE
+  average_time <- mean(testing_dataset$Result, na.rm = TRUE)
+  normalized_knn_mae <- mae / average_time
+  normalized_knn_rmse <- rmse / average_time
+  
+  # Compute residual standard deviation (on log scale)
+  residual_sd <- sd(residuals_log, na.rm = TRUE)
+  
+  # Predict 2028 results
+  new_data_2028 <- testing_numeric[1, , drop = FALSE]
+  new_data_2028$Year <- 2028
+  new_data_2028 <- new_data_2028[, colnames(training_numeric), drop = FALSE]
+  
+  predictions_2028_knn <- knn.reg(train = training_numeric,
+                                  test = new_data_2028,
+                                  y = training_dataset$log_Result,
+                                  k = 3)$pred
+  
+  # Reverse log transformation for 2028 prediction
+  prediction_2028 <- exp(predictions_2028_knn)
+  
+  # Calculate 95% confidence interval
+  lower_95_ci <- max(0, prediction_2028 - 1.96 * residual_sd)  # Ensure non-negative times
+  upper_95_ci <- prediction_2028 + 1.96 * residual_sd
+  
+  # Store results
+  knn_result_df[nrow(knn_result_df) + 1, ] <- c(
+    race_name, medal_type, rmse, mae, normalized_knn_rmse, 
+    normalized_knn_mae, prediction_2028, lower_95_ci, upper_95_ci
+  )
+  
+  # Compute Q-Q plot theoretical and sample quantiles
+  theoretical_q <- qqnorm(residuals_log, plot.it = FALSE)$x
+  sample_q <- residuals_log
+  
+  # Store residuals for Q-Q plots
+  qq_plot_data <- rbind(qq_plot_data, 
+                        data.frame(Race = race_name, 
+                                   Medal = medal_type,
+                                   Theoretical = theoretical_q, 
+                                   Sample = sample_q))
+}
+
+# Save results to CSV
+write.csv(knn_result_df, "knn_results.csv", row.names = FALSE)
+
+# Create a single Q-Q plot with facets for all races and medal types
+ggplot(qq_plot_data, aes(x = Theoretical, y = Sample)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  facet_wrap(~ Race + Medal, scales = "free") +
+  labs(title = "Q-Q Plots of Log-Scale Residuals by Race and Medal",
+       x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
+```
+
+
+
+
+
+
+
