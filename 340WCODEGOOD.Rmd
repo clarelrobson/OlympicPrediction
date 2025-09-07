@@ -159,11 +159,18 @@ split_data <- function(data) {
   n_rows <- nrow(data)
   
   #sample indices for training data
-  train_ind <- sample(1:n_rows, floor(0.80 * n_rows))
+  train_ind <- sample(1:n_rows, floor(0.70 * n_rows))
   
-  #create training and testing sets
+  thirty_ind <- setdiff(1:n_rows, train_ind)
+  
+  test_ind <- sample(thirty_ind, floor(0.20 * n_rows))
+  
+  val_ind <- setdiff(thirty_ind, test_ind)
+  
+  #create training and testing and validation sets
   train_data <- data[train_ind, ]
-  test_data <- data[-train_ind, ]
+  test_data <- data[test_ind, ]
+  val_data <- data[val_ind, ]
   
   #return training and testing sets
   return(list(Train = train_data, Test = test_data))
@@ -354,7 +361,7 @@ write.csv(result_df, "lm_results.csv", row.names = FALSE)
 
 
 ```{r}
-lm_results <- read.csv("~/Desktop/lm_results.csv")
+lm_results <- read.csv("lm_results.csv")
 head(lm_results, n = Inf)
 ```
 
@@ -481,7 +488,7 @@ write.csv(knn_result_df, "knn_results.csv", row.names = FALSE)
 ```
 
 ```{r}
-knn_results <- read.csv("~/Desktop/knn_results.csv")
+knn_results <- read.csv("knn_results.csv")
 head(knn_results, n = Inf)
 ```
 
@@ -593,7 +600,7 @@ write.csv(result_df, "arima_results.csv", row.names = FALSE)
 ```
 
 ```{r}
-arima_results <- read.csv("~/Desktop/arima_results.csv")
+arima_results <- read.csv("arima_results.csv")
 head(arima_results, n = Inf)
 ```
 
