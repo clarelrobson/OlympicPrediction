@@ -20,13 +20,13 @@ library(FNN)
 #load data
 
 #historic olympic data through 2016
-olympics <- read.csv("~/Desktop/results (1).csv")
+olympics <- read.csv("data/results.csv")
 
 #2020 olympic data
-tokyo_olympics <- read.csv("~/Desktop/2020Olympics.csv")
+tokyo_olympics <- read.csv("data/2020Olympics.csv")
 
 #2024 olympic data
-paris_olympics <- read.csv("~/Desktop/2024Olympics.csv")
+paris_olympics <- read.csv("data/2024Olympics.csv")
 ```
 
 ```{r}
